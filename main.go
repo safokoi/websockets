@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"sync"
 
 	"golang.org/x/net/websocket"
 )
@@ -10,12 +11,17 @@ import (
 var port = ":8000"
 
 type client struct {
-	name    string
-	channel chan interface{}
-	status  string
+	username string
+	channel  chan interface{}
+	status   string
 }
 
-var clients = make(map[*websocket.Conn]client)
+type clients struct {
+	sync.Mutex
+	list map[*websocket.Conn]client
+}
+
+var roomies = clients{list: make(map[*websocket.Conn]client)}
 
 var announcement = make(chan client)
 
@@ -24,18 +30,18 @@ func main() {
 	http.Handle("/ws", websocket.Handler(webSocketHandler))
 	http.Handle("/", http.FileServer(http.Dir("./static")))
 
-	go manager()
+	go announcer()
 
 	if err := http.ListenAndServe(port, nil); err != nil {
 		panic("ListenAndServer:" + err.Error())
 	}
 }
 
-func manager() {
+func announcer() {
 	for {
 		client := <-announcement
-		for k := range clients {
-			websocket.JSON.Send(k, fmt.Sprintf("'%v' has %v ", client.name, client.status))
+		for k := range roomies.list {
+			websocket.JSON.Send(k, fmt.Sprintf("'%v' has %v ", client.username, client.status))
 		}
 	}
 }
@@ -43,15 +49,19 @@ func manager() {
 func webSocketHandler(ws *websocket.Conn) {
 	defer func() {
 		ws.Close()
-		client, ok := clients[ws]
+		client, ok := roomies.list[ws]
 		if ok {
-			delete(clients, ws)
+			roomies.Mutex.Lock()
+			delete(roomies.list, ws)
+			roomies.Mutex.Unlock()
 			client.status = "left"
 			announcement <- client
 		}
+
 		fmt.Printf("Connection closed\n")
 	}()
 
+	fmt.Printf("websocket.Conn is %v\n", ws)
 	var name string
 	err := websocket.Message.Send(ws, "Please provide the desired name")
 	if err != nil {
@@ -63,30 +73,32 @@ func webSocketHandler(ws *websocket.Conn) {
 		return
 	}
 
-	for k := range clients {
-		switch clients[k].name {
+	for k := range roomies.list {
+		switch roomies.list[k].username {
 		case name:
 			websocket.Message.Send(ws, fmt.Sprintf("Sorry, the name '%v' is already taken, bye\n", name))
 			return
 		}
 	}
 
-	client := client{name, make(chan interface{}), "joined"}
-	clients[ws] = client
+	roomie := client{name, make(chan interface{}), "joined"}
+	roomies.Mutex.Lock()
+	roomies.list[ws] = roomie
+	roomies.Mutex.Unlock()
 
-	announcement <- client
+	announcement <- roomie
 
-	fmt.Printf("Client with the name '%v' has joined\n", client.name)
-	fmt.Printf("Overall connected clients: %v\n", len(clients))
+	fmt.Printf("Client with the name '%v' has joined\n", roomie.username)
+	fmt.Printf("Overall connected clients: %v\n", len(roomies.list))
 
 	go func() {
 	out:
 		for {
 			select {
-			case message := <-client.channel:
-				for k, v := range clients {
+			case message := <-roomie.channel:
+				for k, v := range roomies.list {
 					websocket.JSON.Send(k, message)
-					fmt.Printf("Message '%v' was sent to '%v' \n", message, v.name)
+					fmt.Printf("Message '%v' was sent to '%v' \n", message, v.username)
 				}
 			case <-ws.Request().Context().Done():
 				fmt.Printf("Goroutine is killed\n")
@@ -102,7 +114,7 @@ func webSocketHandler(ws *websocket.Conn) {
 			break
 		}
 		fmt.Printf("Message '%v' was received\n", message)
-		client.channel <- client.name + ": " + message
+		roomie.channel <- roomie.username + ": " + message
 	}
 
 }
