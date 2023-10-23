@@ -39,9 +39,9 @@ func main() {
 
 func announcer() {
 	for {
-		client := <-announcement
+		roomie := <-announcement
 		for k := range roomies.list {
-			websocket.JSON.Send(k, fmt.Sprintf("'%v' has %v ", client.username, client.status))
+			websocket.JSON.Send(k, fmt.Sprintf("'%v' has %v ", roomie.username, roomie.status))
 		}
 	}
 }
@@ -49,15 +49,14 @@ func announcer() {
 func webSocketHandler(ws *websocket.Conn) {
 	defer func() {
 		ws.Close()
-		client, ok := roomies.list[ws]
+		roomie, ok := roomies.list[ws]
 		if ok {
 			roomies.Mutex.Lock()
 			delete(roomies.list, ws)
 			roomies.Mutex.Unlock()
-			client.status = "left"
-			announcement <- client
+			roomie.status = "left"
+			announcement <- roomie
 		}
-
 		fmt.Printf("Connection closed\n")
 	}()
 
